@@ -46,7 +46,8 @@ python3 -m unittest -v
 
 CI runs the suite as an unprivileged user and fails if any test is skipped.
 It also checks the package hook script, verifies `.SRCINFO`, and builds the
-Arch package.
+Arch package. A disposable container test installs the package, verifies catalog
+regeneration during reinstall, and checks removal preserves the configuration.
 
 ## How it works
 
@@ -88,9 +89,11 @@ by sudo, GDM, or a lock screen; check the calling application's settings.
 
 ## Compatibility
 
-The utility relies on exact upstream gettext `msgid` strings from:
-
-[fingerprint-strings.h](https://github.com/FrameworkComputer/fprintd/blob/master/pam/fingerprint-strings.h)
+The utility relies on exact upstream gettext `msgid` strings. The 44 initial
+prompt identifiers are verified against fprintd 1.94.5's
+[fingerprint-strings.h](https://gitlab.freedesktop.org/libfprint/fprintd/-/blob/v1.94.5/pam/fingerprint-strings.h).
+Unit tests use a committed reference without network access. CI also compares
+the identifiers with upstream source for the fprintd release installed by Arch.
 
 If upstream changes these strings in a future release, authentication will
 still work, but the custom prompt may not appear until the utility is updated
@@ -119,6 +122,6 @@ Common issues:
 - **Locale warning**: Check `LC_ALL`, `LC_MESSAGES`, `LANG`, and `LANGUAGE` in
   the PAM application's environment. Shell settings alone do not establish
   which catalog that application selects.
-- **Gettext link missing**: Reinstall the package or run
-  `sudo fprintd-prompt apply`.
+- **Gettext link missing or incorrect**: Reinstall the package to restore the
+  symlink. `apply` rebuilds the catalog but does not create or repair that link.
 - **Catalog missing but config present**: Run `sudo fprintd-prompt apply`.

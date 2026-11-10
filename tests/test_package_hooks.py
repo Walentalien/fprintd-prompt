@@ -84,3 +84,25 @@ class TestPackageHooks(unittest.TestCase):
         self.assertFalse(state.exists())
         self.assertEqual(self.config.read_text(), "Touch sensor\n")
         self.assertFalse(self.calls.exists())
+
+    def test_install_migrates_legacy_configuration_and_removes_old_catalog(self):
+        self.config.unlink()
+        legacy_config = self.config.with_name("fprintd-custom-prompt.conf")
+        legacy_config.write_text("  Legacy prompt 🔐  \n", encoding="utf-8")
+        legacy_state = self.root / "var" / "lib" / "fprintd-custom-prompt"
+        legacy_state.mkdir(parents=True)
+        (legacy_state / "fprintd.mo").write_bytes(b"old catalog")
+        result = self.run_hook("post_install")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.config.read_text(encoding="utf-8"), "  Legacy prompt 🔐  \n")
+        self.assertFalse(legacy_config.exists())
+        self.assertFalse(legacy_state.exists())
+        self.assertEqual(self.calls.read_text(), "apply\n")
+
+    def test_install_preserves_current_configuration_when_legacy_exists(self):
+        legacy_config = self.config.with_name("fprintd-custom-prompt.conf")
+        legacy_config.write_text("Legacy prompt\n", encoding="utf-8")
+        result = self.run_hook("post_install")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.config.read_text(), "Touch sensor\n")
+        self.assertEqual(legacy_config.read_text(), "Legacy prompt\n")
