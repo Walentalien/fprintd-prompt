@@ -36,6 +36,19 @@ sudo fprintd-prompt apply
 sudo fprintd-prompt reset
 ```
 
+## Tests
+
+With Python and gettext installed, run:
+
+```bash
+python3 -m unittest -v
+```
+
+CI runs the suite as an unprivileged user and fails if any test is skipped.
+It also checks the package hook script, verifies `.SRCINFO`, and builds the
+Arch package. A disposable container test installs the package, verifies catalog
+regeneration during reinstall, and checks removal preserves the configuration.
+
 ## How it works
 
 `pam_fprintd` uses GNU gettext to look up the `en_US` translation of its fingerprint prompt messages.
@@ -50,26 +63,37 @@ When `fprintd-prompt set` is run, the tool:
 
 1. Validates the prompt text.
 2. Generates a `.po` file covering all 44 upstream initial prompt variants.
-3. Compiles it with `msgfmt` into a `.mo` catalog.
-4. Saves the prompt to `/etc/fprintd-prompt.conf`.
-5. Atomically installs the catalog.
+3. Compiles it with `msgfmt` and stages the new catalog and configuration.
+4. Saves the prompt to `/etc/fprintd-prompt.conf`, then activates the catalog.
+
+If catalog activation fails, the previous configuration is restored. If that
+rollback also fails, the error reports how to recover and, when a previous
+configuration existed, where its backup was kept. Each file replacement is
+atomic; the pair is not a single transaction and does not protect against
+process crashes or simultaneous updates.
 
 Authentication behavior is completely unchanged. Only the displayed text is affected.
 
 ## Locale caveat
 
-Gettext ignores translation catalogs when the PAM application uses the `C`
-or `POSIX` locale. The locale of `sudo`, GDM, lock screens, etc. can differ
-from your terminal. Ensure your desktop session uses `en_US.UTF-8` for the
-override to take effect.
+Gettext ignores translation catalogs in `C`/`POSIX` message locales, including
+`C.UTF-8`. For the override to appear, the PAM application must select the
+`en_US` catalog. GNU gettext's `LANGUAGE` preference list can override the
+message language, except in those C/POSIX locales.
 
-Run `fprintd-prompt status` to check your locale settings.
+`fprintd-prompt status` reports installed `en_US.UTF-8` availability separately
+from the shell's message-locale environment (`LC_ALL` > `LC_MESSAGES` > `LANG`)
+and `LANGUAGE`. Names such as `en_US.UTF-8` and `en_US.utf8` are equivalent for
+this availability check. The command cannot determine the actual locale used
+by sudo, GDM, or a lock screen; check the calling application's settings.
 
 ## Compatibility
 
-The utility relies on exact upstream gettext `msgid` strings from:
-
-[fingerprint-strings.h](https://github.com/FrameworkComputer/fprintd/blob/master/pam/fingerprint-strings.h)
+The utility relies on exact upstream gettext `msgid` strings. The 44 initial
+prompt identifiers are verified against fprintd 1.94.5's
+[fingerprint-strings.h](https://gitlab.freedesktop.org/libfprint/fprintd/-/blob/v1.94.5/pam/fingerprint-strings.h).
+Unit tests use a committed reference without network access. CI also compares
+the identifiers with upstream source for the fprintd release installed by Arch.
 
 If upstream changes these strings in a future release, authentication will
 still work, but the custom prompt may not appear until the utility is updated
@@ -95,8 +119,9 @@ fprintd-prompt status
 
 Common issues:
 
-- **Locale warning**: Your shell or PAM session may be using `C` or `POSIX`.
-  Set `LANG=en_US.UTF-8` in your environment.
-- **Gettext link missing**: Reinstall the package or run
-  `sudo fprintd-prompt apply`.
+- **Locale warning**: Check `LC_ALL`, `LC_MESSAGES`, `LANG`, and `LANGUAGE` in
+  the PAM application's environment. Shell settings alone do not establish
+  which catalog that application selects.
+- **Gettext link missing or incorrect**: Reinstall the package to restore the
+  symlink. `apply` rebuilds the catalog but does not create or repair that link.
 - **Catalog missing but config present**: Run `sudo fprintd-prompt apply`.

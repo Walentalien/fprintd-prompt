@@ -16,6 +16,7 @@ import argparse
 import gettext
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -166,13 +167,23 @@ def render_po(prompt: str) -> str:
 # File I/O helpers
 # ---------------------------------------------------------------------------
 
+def _write_all(fd: int, data: bytes) -> None:
+    """Write all bytes, retrying short writes."""
+    remaining = memoryview(data)
+    while remaining:
+        written = os.write(fd, remaining)
+        if written == 0:
+            raise OSError("write made no progress")
+        remaining = remaining[written:]
+
+
 def _atomic_write(path: Path, data: bytes, mode: int = 0o644) -> None:
     """Write *data* to *path* atomically via a temporary file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
         try:
-            os.write(fd, data)
+            _write_all(fd, data)
             os.fchmod(fd, mode)
             os.fsync(fd)
         finally:
@@ -198,7 +209,7 @@ def compile_catalog(po_text: str, output: Path) -> None:
     os.close(fd_mo)
     try:
         try:
-            os.write(fd_po, po_text.encode("utf-8"))
+            _write_all(fd_po, po_text.encode("utf-8"))
         finally:
             os.close(fd_po)
         subprocess.run(
@@ -223,9 +234,14 @@ def compile_catalog(po_text: str, output: Path) -> None:
 
 def read_config(config_path: Path = CONFIG_PATH) -> str | None:
     """Return the configured prompt, or None if no config exists."""
-    if not config_path.is_file():
+    try:
+        text = config_path.read_text(encoding="utf-8").removesuffix("\n")
+    except FileNotFoundError:
         return None
-    text = config_path.read_text(encoding="utf-8").strip()
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            f"Configuration file {config_path} is not valid UTF-8."
+        ) from exc
     return text if text else None
 
 
@@ -237,6 +253,65 @@ def write_config(prompt: str, config_path: Path = CONFIG_PATH) -> None:
 # ---------------------------------------------------------------------------
 # High-level operations
 # ---------------------------------------------------------------------------
+
+def set_prompt(
+    prompt: str,
+    *,
+    config_path: Path = CONFIG_PATH,
+    catalog_path: Path = CATALOG_PATH,
+) -> None:
+    """Prepare both files, then publish with rollback on catalog failure.
+
+    This handles I/O errors, not crashes or concurrent writers. If restoring
+    an existing config fails, keep its backup for manual recovery.
+    """
+    validate_prompt(prompt)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    catalog_path.parent.mkdir(parents=True, exist_ok=True)
+    config_staging = Path(tempfile.mkdtemp(
+        prefix=".fprintd-prompt-", dir=config_path.parent,
+    ))
+    backup = config_staging / "previous.conf"
+    new_config = config_staging / "new.conf"
+    keep_backup = False
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix=".fprintd-prompt-", dir=catalog_path.parent,
+            ignore_cleanup_errors=True,
+        ) as td:
+            new_catalog = Path(td) / "fprintd.mo"
+            compile_catalog(render_po(prompt), new_catalog)
+            try:
+                shutil.copy2(config_path, backup)
+                had_config = True
+            except FileNotFoundError:
+                had_config = False
+            write_config(prompt, config_path=new_config)
+            os.replace(new_config, config_path)
+            try:
+                os.replace(new_catalog, catalog_path)
+            except OSError as update_error:
+                try:
+                    if had_config:
+                        os.replace(backup, config_path)
+                    else:
+                        config_path.unlink()
+                except OSError as rollback_error:
+                    keep_backup = had_config
+                    recovery = (
+                        f"Restore {backup} to {config_path}."
+                        if had_config else
+                        f"Remove {config_path} to restore the previous state."
+                    )
+                    raise OSError(
+                        f"Catalog update failed ({update_error}); configuration "
+                        f"rollback failed ({rollback_error}). {recovery}"
+                    ) from update_error
+                raise
+    finally:
+        if not keep_backup:
+            shutil.rmtree(config_staging, ignore_errors=True)
+
 
 def apply_prompt(
     prompt: str | None = None,
@@ -253,6 +328,7 @@ def apply_prompt(
     if prompt is None:
         return "No custom prompt is configured. Nothing to apply."
 
+    validate_prompt(prompt)
     po_text = render_po(prompt)
     compile_catalog(po_text, catalog_path)
     return f"Custom prompt applied: {prompt}"
@@ -283,6 +359,14 @@ def reset_prompt(
     return "Nothing to remove."
 
 
+def _normalize_locale(name: str) -> str:
+    """Compare locale names without encoding case or separator differences."""
+    locale_name, at, modifier = name.partition("@")
+    language, dot, codeset = locale_name.partition(".")
+    codeset = codeset.lower().replace("-", "").replace("_", "")
+    return language.lower() + dot + codeset + at + modifier
+
+
 def inspect_status(
     *,
     config_path: Path = CONFIG_PATH,
@@ -310,18 +394,30 @@ def inspect_status(
     else:
         info["Gettext link"] = "missing"
 
-    # Shell locale (POSIX hierarchy: LC_ALL > LC_MESSAGES > LANG)
+    # Message locale requested by the shell environment, not the PAM process.
     lang = os.environ.get("LANG", "")
     lc_messages = os.environ.get("LC_MESSAGES", "")
     lc_all = os.environ.get("LC_ALL", "")
     effective = lc_all if lc_all else (lc_messages if lc_messages else lang)
-    info["Current shell locale"] = effective if effective else "(unset)"
+    info["Shell message locale"] = effective or "(unset; defaults to C)"
+    language_pref = os.environ.get("LANGUAGE", "")
+    info["Shell LANGUAGE"] = language_pref or "(unset)"
+    info["PAM application locale"] = "unknown — may differ from this shell"
+    message_base = _normalize_locale(effective).split("@", 1)[0].split(".", 1)[0]
 
-    if effective in ("C", "POSIX", "C.UTF-8", ""):
+    if not effective or message_base in ("c", "posix"):
         info["Locale warning"] = (
-            "The current shell locale is not en_US. Gettext may ignore "
-            "the catalog. The PAM application's locale can differ from "
-            "this shell."
+            "Gettext translations are disabled by the shell message locale; "
+            "LANGUAGE is ignored."
+        )
+    elif language_pref:
+        info["Locale warning"] = (
+            "LANGUAGE overrides the shell message locale; en_US catalog "
+            "selection depends on its preference list."
+        )
+    elif message_base != "en_us":
+        info["Locale warning"] = (
+            "The shell message locale does not normally select the en_US catalog."
         )
 
     # Verify the catalog actually translates a representative message
@@ -343,7 +439,7 @@ def inspect_status(
     elif prompt:
         info["Catalog verification"] = "catalog missing but config present"
 
-    # en_US.UTF-8 availability
+    # Installed locale availability is independent of the shell/PAM selection.
     try:
         result = subprocess.run(
             ["locale", "-a"],
@@ -352,14 +448,12 @@ def inspect_status(
             check=True,
         )
         locales = result.stdout.strip().splitlines()
-        if "en_US.UTF-8" in locales:
-            info["en_US.UTF-8 locale"] = "available"
+        if any(_normalize_locale(name) == "en_us.utf8" for name in locales):
+            info["Installed en_US.UTF-8 locale"] = "available"
         else:
-            info["en_US.UTF-8 locale"] = (
-                "not found — the PAM application may not see translations"
-            )
-    except Exception:
-        info["en_US.UTF-8 locale"] = "could not determine"
+            info["Installed en_US.UTF-8 locale"] = "not listed by locale -a"
+    except (OSError, subprocess.CalledProcessError):
+        info["Installed en_US.UTF-8 locale"] = "could not determine"
 
     return info
 
@@ -411,35 +505,34 @@ def main(argv: list[str] | None = None) -> None:
         parser.print_help()
         sys.exit(0)
 
-    if args.command == "get":
-        prompt = read_config()
-        if prompt is None:
-            print("No custom prompt is configured.", file=sys.stderr)
-            sys.exit(1)
-        print(prompt)
-        return
-
-    if args.command == "status":
-        for key, value in inspect_status().items():
-            print(f"{key}: {value}")
-        return
-
-    # Commands below require root
-    _require_root()
-
     try:
+        if args.command == "get":
+            prompt = read_config(config_path=CONFIG_PATH)
+            if prompt is None:
+                print("No custom prompt is configured.", file=sys.stderr)
+                sys.exit(1)
+            print(prompt)
+            return
+
+        if args.command == "status":
+            for key, value in inspect_status(
+                config_path=CONFIG_PATH, catalog_path=CATALOG_PATH,
+                system_catalog_path=SYSTEM_CATALOG_PATH,
+            ).items():
+                print(f"{key}: {value}")
+            return
+
+        # Commands below require root
+        _require_root()
+
         if args.command == "set":
             prompt = args.prompt
-            validate_prompt(prompt)
-            # Compile first before committing
-            po_text = render_po(prompt)
-            compile_catalog(po_text, CATALOG_PATH)
-            write_config(prompt)
+            set_prompt(prompt, config_path=CONFIG_PATH, catalog_path=CATALOG_PATH)
             print(f"Custom prompt set: {prompt}")
             return
 
         if args.command == "apply":
-            result = apply_prompt()
+            result = apply_prompt(config_path=CONFIG_PATH, catalog_path=CATALOG_PATH)
             print(result)
             return
 
@@ -457,7 +550,7 @@ def main(argv: list[str] | None = None) -> None:
         err = exc.stderr.strip() if exc.stderr else str(exc)
         print(f"Error compiling catalog: {err}", file=sys.stderr)
         sys.exit(1)
-    except ValueError as exc:
+    except (ValueError, OSError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
 

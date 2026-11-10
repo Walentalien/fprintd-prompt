@@ -1,0 +1,78 @@
+name: CI
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    container: archlinux:base
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git python gettext fprintd shellcheck curl
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Prepare unprivileged build user
+        run: |
+          useradd --create-home builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+
+      - name: Run all tests without skips
+        run: |
+          runuser -u builder -- python - <<'PY'
+          import shutil
+          import sys
+          import unittest
+
+          if shutil.which("msgfmt") is None:
+              raise SystemExit("gettext/msgfmt is required in CI")
+          suite = unittest.defaultTestLoader.discover("tests")
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if result.skipped:
+              print("Skipped tests are not allowed in CI:", result.skipped, file=sys.stderr)
+          raise SystemExit(not result.wasSuccessful() or bool(result.skipped) or not result.testsRun)
+          PY
+
+      - name: Check package hook script
+        run: |
+          bash -n fprintd-prompt.install
+          shellcheck --shell=bash fprintd-prompt.install
+          bash -n tests/package_lifecycle.sh
+          shellcheck tests/package_lifecycle.sh
+
+      - name: Check installed fprintd release compatibility
+        run: |
+          package_version=$(pacman -Q fprintd | cut -d' ' -f2)
+          upstream_version=${package_version#*:}
+          upstream_version=${upstream_version%-*}
+          header=$(runuser -u builder -- mktemp /tmp/fprintd-upstream.XXXXXX)
+          runuser -u builder -- curl --fail --silent --show-error --location --retry 3 --max-time 60 \
+            "https://gitlab.freedesktop.org/libfprint/fprintd/-/raw/v${upstream_version}/pam/fingerprint-strings.h" \
+            --output "$header"
+          runuser -u builder -- python tests/check_upstream.py "$header"
+
+      - name: Check package metadata
+        run: |
+          runuser -u builder -- makepkg --printsrcinfo | diff -u .SRCINFO -
+
+      - name: Build Arch package
+        run: |
+          runuser -u builder -- makepkg --noconfirm --noprogressbar
+
+      - name: Test package lifecycle in container
+        run: |
+          # The first entry is the main package; later entries can include unbuilt debug archives.
+          package=$(runuser -u builder -- makepkg --packagelist | sed -n '1p')
+          bash tests/package_lifecycle.sh "$package"
