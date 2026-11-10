@@ -167,13 +167,23 @@ def render_po(prompt: str) -> str:
 # File I/O helpers
 # ---------------------------------------------------------------------------
 
+def _write_all(fd: int, data: bytes) -> None:
+    """Write all bytes, retrying short writes."""
+    remaining = memoryview(data)
+    while remaining:
+        written = os.write(fd, remaining)
+        if written == 0:
+            raise OSError("write made no progress")
+        remaining = remaining[written:]
+
+
 def _atomic_write(path: Path, data: bytes, mode: int = 0o644) -> None:
     """Write *data* to *path* atomically via a temporary file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
         try:
-            os.write(fd, data)
+            _write_all(fd, data)
             os.fchmod(fd, mode)
             os.fsync(fd)
         finally:
@@ -199,7 +209,7 @@ def compile_catalog(po_text: str, output: Path) -> None:
     os.close(fd_mo)
     try:
         try:
-            os.write(fd_po, po_text.encode("utf-8"))
+            _write_all(fd_po, po_text.encode("utf-8"))
         finally:
             os.close(fd_po)
         subprocess.run(

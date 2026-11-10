@@ -286,6 +286,44 @@ class TestRenderPo(unittest.TestCase):
 class TestAtomicWrite(unittest.TestCase):
     """Test atomic file writing."""
 
+    def test_short_writes_preserve_complete_utf8_data(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "config.conf"
+            path.write_bytes(b"previous config")
+            data = "Touch sensor 🔐 — 100%\n".encode("utf-8")
+            real_write = os.write
+            with patch.object(fp.os, "write", side_effect=lambda fd, chunk:
+                              real_write(fd, chunk[:3])):
+                fp._atomic_write(path, data, mode=0o640)
+            self.assertEqual(path.read_bytes(), data)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o640)
+            self.assertEqual(list(Path(td).iterdir()), [path])
+
+    def test_failure_after_short_write_preserves_existing_file(self):
+        for failure in ("storage failure", "no progress"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as td:
+                path = Path(td) / "config.conf"
+                path.write_bytes(b"previous config")
+                real_write = os.write
+                calls = 0
+
+                def fail_after_prefix(fd, chunk):
+                    nonlocal calls
+                    calls += 1
+                    if calls == 1:
+                        return real_write(fd, chunk[:3])
+                    if calls == 2:
+                        if failure == "no progress":
+                            return 0
+                        raise OSError("storage failure")
+                    raise AssertionError("retried after zero progress")
+
+                with patch.object(fp.os, "write", side_effect=fail_after_prefix):
+                    with self.assertRaisesRegex(OSError, failure):
+                        fp._atomic_write(path, b"new config\n")
+                self.assertEqual(path.read_bytes(), b"previous config")
+                self.assertEqual(list(Path(td).iterdir()), [path])
+
     def test_creates_file(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "sub" / "test.txt"
@@ -316,6 +354,56 @@ class TestAtomicWrite(unittest.TestCase):
 
 class TestCatalogCompilation(unittest.TestCase):
     """Test .mo catalog generation (requires msgfmt)."""
+
+    @unittest.skipUnless(_have_msgfmt(), "msgfmt not installed")
+    def test_short_po_writes_preserve_all_generic_translations(self):
+        with tempfile.TemporaryDirectory() as td:
+            mo = Path(td) / "fprintd.mo"
+            prompt = "Touch sensor 🔐 — 100%"
+            po = fp.render_po(prompt)
+            # A header-only PO is valid input to msgfmt but loses translations.
+            header_size = po.encode("utf-8").index(b"\n\n") + 2
+            real_write = os.write
+            with patch.object(fp.tempfile, "tempdir", td), \
+                 patch.object(fp.os, "write", side_effect=lambda fd, chunk:
+                              real_write(fd, chunk[:header_size])):
+                fp.compile_catalog(po, mo)
+            with mo.open("rb") as fh:
+                translations = gettext.GNUTranslations(fh)
+            for msgid in fp.INITIAL_MSGIDS:
+                if "%s" not in msgid:
+                    with self.subTest(msgid=msgid):
+                        self.assertEqual(translations.gettext(msgid), prompt)
+            self.assertEqual(mo.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(list(Path(td).iterdir()), [mo])
+
+    def test_failure_after_short_po_write_preserves_existing_catalog(self):
+        for failure in ("storage failure", "no progress"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as td:
+                mo = Path(td) / "fprintd.mo"
+                mo.write_bytes(b"previous catalog")
+                real_write = os.write
+                calls = 0
+
+                def fail_after_prefix(fd, chunk):
+                    nonlocal calls
+                    calls += 1
+                    if calls == 1:
+                        return real_write(fd, chunk[:3])
+                    if calls == 2:
+                        if failure == "no progress":
+                            return 0
+                        raise OSError("storage failure")
+                    raise AssertionError("retried after zero progress")
+
+                with patch.object(fp.tempfile, "tempdir", td), \
+                     patch.object(fp.os, "write", side_effect=fail_after_prefix), \
+                     patch.object(fp.subprocess, "run") as compiler:
+                    with self.assertRaisesRegex(OSError, failure):
+                        fp.compile_catalog(fp.render_po("Touch sensor"), mo)
+                    compiler.assert_not_called()
+                self.assertEqual(mo.read_bytes(), b"previous catalog")
+                self.assertEqual(list(Path(td).iterdir()), [mo])
 
     @unittest.skipUnless(_have_msgfmt(), "msgfmt not installed")
     def test_compile_basic(self):
