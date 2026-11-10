@@ -36,6 +36,18 @@ sudo fprintd-prompt apply
 sudo fprintd-prompt reset
 ```
 
+## Tests
+
+With Python and gettext installed, run:
+
+```bash
+python3 -m unittest -v
+```
+
+CI runs the suite as an unprivileged user and fails if any test is skipped.
+It also checks the package hook script, verifies `.SRCINFO`, and builds the
+Arch package.
+
 ## How it works
 
 `pam_fprintd` uses GNU gettext to look up the `en_US` translation of its fingerprint prompt messages.
