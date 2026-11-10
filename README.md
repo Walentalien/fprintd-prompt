@@ -63,12 +63,16 @@ Authentication behavior is completely unchanged. Only the displayed text is affe
 
 ## Locale caveat
 
-Gettext ignores translation catalogs when the PAM application uses the `C`
-or `POSIX` locale. The locale of `sudo`, GDM, lock screens, etc. can differ
-from your terminal. Ensure your desktop session uses `en_US.UTF-8` for the
-override to take effect.
+Gettext ignores translation catalogs in `C`/`POSIX` message locales, including
+`C.UTF-8`. For the override to appear, the PAM application must select the
+`en_US` catalog. GNU gettext's `LANGUAGE` preference list can override the
+message language, except in those C/POSIX locales.
 
-Run `fprintd-prompt status` to check your locale settings.
+`fprintd-prompt status` reports installed `en_US.UTF-8` availability separately
+from the shell's message-locale environment (`LC_ALL` > `LC_MESSAGES` > `LANG`)
+and `LANGUAGE`. Names such as `en_US.UTF-8` and `en_US.utf8` are equivalent for
+this availability check. The command cannot determine the actual locale used
+by sudo, GDM, or a lock screen; check the calling application's settings.
 
 ## Compatibility
 
@@ -100,8 +104,9 @@ fprintd-prompt status
 
 Common issues:
 
-- **Locale warning**: Your shell or PAM session may be using `C` or `POSIX`.
-  Set `LANG=en_US.UTF-8` in your environment.
+- **Locale warning**: Check `LC_ALL`, `LC_MESSAGES`, `LANG`, and `LANGUAGE` in
+  the PAM application's environment. Shell settings alone do not establish
+  which catalog that application selects.
 - **Gettext link missing**: Reinstall the package or run
   `sudo fprintd-prompt apply`.
 - **Catalog missing but config present**: Run `sudo fprintd-prompt apply`.

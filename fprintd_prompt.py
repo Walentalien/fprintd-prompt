@@ -343,6 +343,14 @@ def reset_prompt(
     return "Nothing to remove."
 
 
+def _normalize_locale(name: str) -> str:
+    """Compare locale names without encoding case or separator differences."""
+    locale_name, at, modifier = name.partition("@")
+    language, dot, codeset = locale_name.partition(".")
+    codeset = codeset.lower().replace("-", "").replace("_", "")
+    return language.lower() + dot + codeset + at + modifier
+
+
 def inspect_status(
     *,
     config_path: Path = CONFIG_PATH,
@@ -370,18 +378,30 @@ def inspect_status(
     else:
         info["Gettext link"] = "missing"
 
-    # Shell locale (POSIX hierarchy: LC_ALL > LC_MESSAGES > LANG)
+    # Message locale requested by the shell environment, not the PAM process.
     lang = os.environ.get("LANG", "")
     lc_messages = os.environ.get("LC_MESSAGES", "")
     lc_all = os.environ.get("LC_ALL", "")
     effective = lc_all if lc_all else (lc_messages if lc_messages else lang)
-    info["Current shell locale"] = effective if effective else "(unset)"
+    info["Shell message locale"] = effective or "(unset; defaults to C)"
+    language_pref = os.environ.get("LANGUAGE", "")
+    info["Shell LANGUAGE"] = language_pref or "(unset)"
+    info["PAM application locale"] = "unknown — may differ from this shell"
+    message_base = _normalize_locale(effective).split("@", 1)[0].split(".", 1)[0]
 
-    if effective in ("C", "POSIX", "C.UTF-8", ""):
+    if not effective or message_base in ("c", "posix"):
         info["Locale warning"] = (
-            "The current shell locale is not en_US. Gettext may ignore "
-            "the catalog. The PAM application's locale can differ from "
-            "this shell."
+            "Gettext translations are disabled by the shell message locale; "
+            "LANGUAGE is ignored."
+        )
+    elif language_pref:
+        info["Locale warning"] = (
+            "LANGUAGE overrides the shell message locale; en_US catalog "
+            "selection depends on its preference list."
+        )
+    elif message_base != "en_us":
+        info["Locale warning"] = (
+            "The shell message locale does not normally select the en_US catalog."
         )
 
     # Verify the catalog actually translates a representative message
@@ -403,7 +423,7 @@ def inspect_status(
     elif prompt:
         info["Catalog verification"] = "catalog missing but config present"
 
-    # en_US.UTF-8 availability
+    # Installed locale availability is independent of the shell/PAM selection.
     try:
         result = subprocess.run(
             ["locale", "-a"],
@@ -412,14 +432,12 @@ def inspect_status(
             check=True,
         )
         locales = result.stdout.strip().splitlines()
-        if "en_US.UTF-8" in locales:
-            info["en_US.UTF-8 locale"] = "available"
+        if any(_normalize_locale(name) == "en_us.utf8" for name in locales):
+            info["Installed en_US.UTF-8 locale"] = "available"
         else:
-            info["en_US.UTF-8 locale"] = (
-                "not found — the PAM application may not see translations"
-            )
-    except Exception:
-        info["en_US.UTF-8 locale"] = "could not determine"
+            info["Installed en_US.UTF-8 locale"] = "not listed by locale -a"
+    except (OSError, subprocess.CalledProcessError):
+        info["Installed en_US.UTF-8 locale"] = "could not determine"
 
     return info
 

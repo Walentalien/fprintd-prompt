@@ -742,12 +742,13 @@ class TestInspectStatus(unittest.TestCase):
                 os.environ["LANG"] = "C"
                 os.environ["LC_MESSAGES"] = "en_US.UTF-8"
                 os.environ.pop("LC_ALL", None)
+                os.environ.pop("LANGUAGE", None)
                 info = fp.inspect_status(
                     config_path=cfg,
                     catalog_path=mo,
                     system_catalog_path=sys_cat,
                 )
-                self.assertEqual(info["Current shell locale"], "en_US.UTF-8")
+                self.assertEqual(info["Shell message locale"], "en_US.UTF-8")
                 self.assertNotIn("Locale warning", info)
             finally:
                 os.environ.clear()
@@ -768,11 +769,119 @@ class TestInspectStatus(unittest.TestCase):
                     catalog_path=mo,
                     system_catalog_path=sys_cat,
                 )
-                self.assertEqual(info["Current shell locale"], "C")
+                self.assertEqual(info["Shell message locale"], "C")
                 self.assertIn("Locale warning", info)
             finally:
                 os.environ.clear()
                 os.environ.update(old_env)
+
+
+class TestLocaleStatus(unittest.TestCase):
+    def setUp(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        root = Path(td.name)
+        self.paths = dict(config_path=root / "config.conf",
+                          catalog_path=root / "fprintd.mo",
+                          system_catalog_path=root / "system.mo")
+
+    def status(self, env, locales="C\nC.utf8\nen_US.utf8\n"):
+        result = subprocess.CompletedProcess(["locale", "-a"], 0,
+                                             stdout=locales)
+        with patch.dict(os.environ, env, clear=True), \
+             patch.object(fp.subprocess, "run", return_value=result):
+            return fp.inspect_status(**self.paths)
+
+    def test_installed_utf8_spelling_variants(self):
+        for name in ("en_US.UTF-8", "en_US.utf8", "en_US.UTF8", "en_US.utf_8"):
+            with self.subTest(name=name):
+                info = self.status({"LANG": "en_US.UTF-8"}, locales=name + "\n")
+                self.assertEqual(info["Installed en_US.UTF-8 locale"], "available")
+
+    def test_other_locales_do_not_count_as_installed_en_us_utf8(self):
+        for name in ("en_GB.utf8", "pl_PL.utf8", "C.utf8",
+                     "en_US.iso88591", "en_US.utf8@custom"):
+            with self.subTest(name=name):
+                info = self.status({"LANG": "en_US.UTF-8"}, locales=name + "\n")
+                self.assertEqual(info["Installed en_US.UTF-8 locale"],
+                                 "not listed by locale -a")
+
+    def test_installed_locale_does_not_suppress_polish_locale_warning(self):
+        info = self.status({"LANG": "pl_PL.UTF-8"})
+        self.assertEqual(info["Installed en_US.UTF-8 locale"], "available")
+        self.assertEqual(info["Shell message locale"], "pl_PL.UTF-8")
+        self.assertIn("en_US", info["Locale warning"])
+
+    def test_shell_setting_does_not_imply_locale_is_installed(self):
+        info = self.status({"LANG": "en_US.UTF-8"}, locales="C\n")
+        self.assertEqual(info["Shell message locale"], "en_US.UTF-8")
+        self.assertEqual(info["Installed en_US.UTF-8 locale"],
+                         "not listed by locale -a")
+
+    def test_en_us_message_locale_variants_do_not_warn(self):
+        for name in ("en_US", "en_US.UTF-8", "en_US.utf8"):
+            with self.subTest(name=name):
+                info = self.status({"LANG": name})
+                self.assertNotIn("Locale warning", info)
+
+    def test_c_and_posix_locales_warn_even_with_language_override(self):
+        for name in ("C", "POSIX", "C.UTF-8", "C.utf8"):
+            with self.subTest(name=name):
+                info = self.status({"LANG": name, "LANGUAGE": "en_US"})
+                self.assertIn("disabled", info["Locale warning"])
+                self.assertIn("LANGUAGE is ignored", info["Locale warning"])
+
+    def test_unset_locale_warns(self):
+        info = self.status({})
+        self.assertEqual(info["Shell message locale"], "(unset; defaults to C)")
+        self.assertIn("disabled", info["Locale warning"])
+
+    def test_empty_locale_variables_follow_precedence(self):
+        cases = [
+            ({"LANG": "pl_PL.UTF-8", "LC_MESSAGES": "en_US.utf8", "LC_ALL": ""},
+             "en_US.utf8"),
+            ({"LANG": "en_US.UTF-8", "LC_MESSAGES": "", "LC_ALL": ""},
+             "en_US.UTF-8"),
+            ({"LANG": "en_US.UTF-8", "LC_MESSAGES": "pl_PL.UTF-8",
+              "LC_ALL": "C.utf8"}, "C.utf8"),
+        ]
+        for env, expected in cases:
+            with self.subTest(env=env):
+                self.assertEqual(self.status(env)["Shell message locale"], expected)
+
+    def test_language_override_is_reported_without_predicting_selection(self):
+        for message_locale, languages in (("en_US.UTF-8", "pl_PL:en_US"),
+                                          ("pl_PL.UTF-8", "en_US")):
+            with self.subTest(message_locale=message_locale, languages=languages):
+                info = self.status({"LANG": message_locale, "LANGUAGE": languages})
+                self.assertEqual(info["Shell LANGUAGE"], languages)
+                self.assertIn("LANGUAGE overrides", info["Locale warning"])
+                self.assertIn("preference list", info["Locale warning"])
+
+    def test_empty_language_is_ignored(self):
+        info = self.status({"LANG": "en_US.UTF-8", "LANGUAGE": ""})
+        self.assertEqual(info["Shell LANGUAGE"], "(unset)")
+        self.assertNotIn("Locale warning", info)
+
+    def test_pam_locale_is_unknown_regardless_of_shell_locale(self):
+        for name in ("en_US.UTF-8", "pl_PL.UTF-8", "C"):
+            with self.subTest(name=name):
+                info = self.status({"LANG": name})
+                self.assertIn("unknown", info["PAM application locale"])
+                self.assertIn("may differ", info["PAM application locale"])
+
+    def test_locale_command_failure_keeps_shell_and_pam_diagnostics(self):
+        for error in (FileNotFoundError("locale"),
+                      subprocess.CalledProcessError(1, ["locale", "-a"])):
+            with self.subTest(error=error), \
+                 patch.dict(os.environ, {"LANG": "pl_PL.UTF-8"}, clear=True), \
+                 patch.object(fp.subprocess, "run", side_effect=error):
+                info = fp.inspect_status(**self.paths)
+                self.assertEqual(info["Installed en_US.UTF-8 locale"],
+                                 "could not determine")
+                self.assertEqual(info["Shell message locale"], "pl_PL.UTF-8")
+                self.assertIn("Locale warning", info)
+                self.assertIn("unknown", info["PAM application locale"])
 
 
 class TestParser(unittest.TestCase):
