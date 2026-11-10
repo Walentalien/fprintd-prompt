@@ -224,9 +224,14 @@ def compile_catalog(po_text: str, output: Path) -> None:
 
 def read_config(config_path: Path = CONFIG_PATH) -> str | None:
     """Return the configured prompt, or None if no config exists."""
-    if not config_path.is_file():
+    try:
+        text = config_path.read_text(encoding="utf-8").removesuffix("\n")
+    except FileNotFoundError:
         return None
-    text = config_path.read_text(encoding="utf-8").removesuffix("\n")
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            f"Configuration file {config_path} is not valid UTF-8."
+        ) from exc
     return text if text else None
 
 
@@ -313,6 +318,7 @@ def apply_prompt(
     if prompt is None:
         return "No custom prompt is configured. Nothing to apply."
 
+    validate_prompt(prompt)
     po_text = render_po(prompt)
     compile_catalog(po_text, catalog_path)
     return f"Custom prompt applied: {prompt}"
@@ -489,23 +495,26 @@ def main(argv: list[str] | None = None) -> None:
         parser.print_help()
         sys.exit(0)
 
-    if args.command == "get":
-        prompt = read_config()
-        if prompt is None:
-            print("No custom prompt is configured.", file=sys.stderr)
-            sys.exit(1)
-        print(prompt)
-        return
-
-    if args.command == "status":
-        for key, value in inspect_status().items():
-            print(f"{key}: {value}")
-        return
-
-    # Commands below require root
-    _require_root()
-
     try:
+        if args.command == "get":
+            prompt = read_config(config_path=CONFIG_PATH)
+            if prompt is None:
+                print("No custom prompt is configured.", file=sys.stderr)
+                sys.exit(1)
+            print(prompt)
+            return
+
+        if args.command == "status":
+            for key, value in inspect_status(
+                config_path=CONFIG_PATH, catalog_path=CATALOG_PATH,
+                system_catalog_path=SYSTEM_CATALOG_PATH,
+            ).items():
+                print(f"{key}: {value}")
+            return
+
+        # Commands below require root
+        _require_root()
+
         if args.command == "set":
             prompt = args.prompt
             set_prompt(prompt, config_path=CONFIG_PATH, catalog_path=CATALOG_PATH)
@@ -513,7 +522,7 @@ def main(argv: list[str] | None = None) -> None:
             return
 
         if args.command == "apply":
-            result = apply_prompt()
+            result = apply_prompt(config_path=CONFIG_PATH, catalog_path=CATALOG_PATH)
             print(result)
             return
 

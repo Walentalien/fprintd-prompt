@@ -536,6 +536,38 @@ class TestConfiguration(unittest.TestCase):
 class TestApplyPrompt(unittest.TestCase):
     """Test apply_prompt with temporary paths."""
 
+    def test_rejects_invalid_explicit_prompts_before_compiling(self):
+        prompts = ("", "line\nbreak", "nul\x00byte", "control\x1b",
+                   "a" * 4097, "🔐" * 1025)
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Path(td) / "config.conf"
+            mo = Path(td) / "test.mo"
+            mo.write_bytes(b"existing catalog")
+            for prompt in prompts:
+                with self.subTest(prompt=repr(prompt[:30])), \
+                     patch.object(fp, "compile_catalog") as compile_catalog:
+                    with self.assertRaises(ValueError):
+                        fp.apply_prompt(prompt, config_path=cfg, catalog_path=mo)
+                    compile_catalog.assert_not_called()
+                    self.assertEqual(mo.read_bytes(), b"existing catalog")
+
+    def test_rejects_invalid_saved_prompts_before_compiling(self):
+        prompts = ("line\nbreak", "nul\x00byte", "control\x1b",
+                   "a" * 4097, "🔐" * 1025)
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Path(td) / "config.conf"
+            mo = Path(td) / "test.mo"
+            mo.write_bytes(b"existing catalog")
+            for prompt in prompts:
+                cfg.write_text(prompt + "\n", encoding="utf-8")
+                with self.subTest(prompt=repr(prompt[:30])), \
+                     patch.object(fp, "compile_catalog") as compile_catalog:
+                    with self.assertRaises(ValueError):
+                        fp.apply_prompt(config_path=cfg, catalog_path=mo)
+                    compile_catalog.assert_not_called()
+                    self.assertEqual(mo.read_bytes(), b"existing catalog")
+                    self.assertEqual(cfg.read_text(encoding="utf-8"), prompt + "\n")
+
     @unittest.skipUnless(_have_msgfmt(), "msgfmt not installed")
     def test_apply_with_explicit_prompt(self):
         with tempfile.TemporaryDirectory() as td:
@@ -561,6 +593,93 @@ class TestApplyPrompt(unittest.TestCase):
             mo = Path(td) / "test.mo"
             result = fp.apply_prompt(config_path=cfg, catalog_path=mo)
             self.assertIn("Nothing to apply", result)
+
+
+class TestConfigurationCli(unittest.TestCase):
+    def setUp(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        self.root = Path(td.name)
+        self.config = self.root / "config.conf"
+        self.catalog = self.root / "fprintd.mo"
+        self.catalog.write_bytes(b"existing catalog")
+
+    def run_cli(self, command):
+        # Use the real CLI in a child process, with temporary system paths.
+        script = (
+            "import sys\n"
+            "from pathlib import Path\n"
+            "import fprintd_prompt as fp\n"
+            "fp.CONFIG_PATH = Path(sys.argv[1])\n"
+            "fp.CATALOG_PATH = Path(sys.argv[2])\n"
+            "fp.SYSTEM_CATALOG_PATH = Path(sys.argv[3])\n"
+            "fp._require_root = lambda: None\n"
+            "fp.main(sys.argv[4:])\n"
+        )
+        return subprocess.run(
+            [sys.executable, "-c", script, str(self.config), str(self.catalog),
+             str(self.root / "system.mo"), command],
+            cwd=Path(fp.__file__).resolve().parent,
+            capture_output=True, text=True,
+            env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"),
+        )
+
+    def assert_read_failure(self, expected):
+        for command in ("apply", "get", "status"):
+            with self.subTest(command=command):
+                result = self.run_cli(command)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("Error:", result.stderr)
+                self.assertIn(str(self.config), result.stderr)
+                self.assertIn(expected, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertEqual(self.catalog.read_bytes(), b"existing catalog")
+
+    def test_malformed_utf8_is_reported_without_traceback(self):
+        self.config.write_bytes(b"\xff\n")
+        self.assert_read_failure("not valid UTF-8")
+
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses file permissions")
+    def test_unreadable_config_is_reported_without_traceback(self):
+        self.config.write_text("Touch sensor\n", encoding="utf-8")
+        self.config.chmod(0o000)
+        try:
+            self.assert_read_failure("Permission denied")
+        finally:
+            self.config.chmod(0o600)
+
+    def test_directory_config_is_reported_without_traceback(self):
+        self.config.mkdir()
+        self.assert_read_failure("Is a directory")
+
+    def test_invalid_saved_prompt_is_reported_without_traceback(self):
+        self.config.write_text("line\nbreak\n", encoding="utf-8")
+        result = self.run_cli("apply")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("control characters", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(self.catalog.read_bytes(), b"existing catalog")
+
+    def test_missing_config_remains_a_noop_for_apply(self):
+        result = self.run_cli("apply")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Nothing to apply", result.stdout)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(self.catalog.read_bytes(), b"existing catalog")
+
+    @unittest.skipUnless(_have_msgfmt(), "msgfmt not installed")
+    def test_valid_saved_prompt_is_applied_through_cli(self):
+        prompt = " \tTouch sensor 🔐 100%\t "
+        fp.write_config(prompt, config_path=self.config)
+        result = self.run_cli("apply")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, f"Custom prompt applied: {prompt}\n")
+        with self.catalog.open("rb") as fh:
+            translations = gettext.GNUTranslations(fh)
+        self.assertEqual(translations.gettext(
+            "Place your finger on the fingerprint reader"), prompt)
 
 
 class TestResetPrompt(unittest.TestCase):
