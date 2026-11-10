@@ -240,6 +240,7 @@ class TestRenderPo(unittest.TestCase):
 
     def test_has_header(self):
         po = fp.render_po("test")
+        self.assertIn('Project-Id-Version: fprintd-prompt', po)
         self.assertIn('Language: en_US', po)
         self.assertIn('charset=UTF-8', po)
 

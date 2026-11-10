@@ -27,8 +27,8 @@ __version__ = "2.0.0"
 # Fixed system paths (production)
 # ---------------------------------------------------------------------------
 
-CONFIG_PATH = Path("/etc/fprintd-custom-prompt.conf")
-STATE_DIR = Path("/var/lib/fprintd-custom-prompt")
+CONFIG_PATH = Path("/etc/fprintd-prompt.conf")
+STATE_DIR = Path("/var/lib/fprintd-prompt")
 CATALOG_PATH = STATE_DIR / "fprintd.mo"
 SYSTEM_CATALOG_PATH = Path("/usr/share/locale/en_US/LC_MESSAGES/fprintd.mo")
 
@@ -144,7 +144,7 @@ def render_po(prompt: str) -> str:
     lines: list[str] = []
     lines.append('msgid ""')
     lines.append('msgstr ""')
-    lines.append('"Project-Id-Version: fprintd-custom-prompt\\n"')
+    lines.append('"Project-Id-Version: fprintd-prompt\\n"')
     lines.append('"Language: en_US\\n"')
     lines.append('"MIME-Version: 1.0\\n"')
     lines.append('"Content-Type: text/plain; charset=UTF-8\\n"')

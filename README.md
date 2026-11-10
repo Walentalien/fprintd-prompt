@@ -1,8 +1,8 @@
-# fprintd Custom Prompt
+# fprintd-prompt
 
 Set a custom fingerprint reader prompt for `pam_fprintd` with one command:
 ```bash
-"sudo fprintd-prompt set "Touch the sensor (appropriately)"
+sudo fprintd-prompt set "Touch the sensor"
 ```
 
 The utility generates a GNU gettext catalog that overrides `pam_fprintd`'s `en_US` messages. 
@@ -12,8 +12,8 @@ The utility generates a GNU gettext catalog that overrides `pam_fprintd`'s `en_U
 Build and install the Arch package:
 
 ```bash
-git clone https://github.com/Walentalien/fprintd-en-us-prompt-override
-cd fprintd-en-us-prompt-override
+git clone https://github.com/Walentalien/fprintd-prompt
+cd fprintd-prompt
 makepkg -si
 ```
 
@@ -43,7 +43,7 @@ The package installs a symlink:
 
 ```
 /usr/share/locale/en_US/LC_MESSAGES/fprintd.mo
-  -> /var/lib/fprintd-custom-prompt/fprintd.mo
+  -> /var/lib/fprintd-prompt/fprintd.mo
 ```
 
 When `fprintd-prompt set` is run, the tool:
@@ -51,7 +51,7 @@ When `fprintd-prompt set` is run, the tool:
 1. Validates the prompt text.
 2. Generates a `.po` file covering all 44 upstream initial prompt variants.
 3. Compiles it with `msgfmt` into a `.mo` catalog.
-4. Saves the prompt to `/etc/fprintd-custom-prompt.conf`.
+4. Saves the prompt to `/etc/fprintd-prompt.conf`.
 5. Atomically installs the catalog.
 
 Authentication behavior is completely unchanged. Only the displayed text is affected.
@@ -78,12 +78,12 @@ with the new identifiers.
 ## Uninstall
 
 ```bash
-sudo pacman -Rns fprintd-custom-prompt
+sudo pacman -Rns fprintd-prompt
 ```
 
 This removes the package, the symlink, and the generated catalog. Upstream
 prompt behavior is immediately restored. The configuration file
-`/etc/fprintd-custom-prompt.conf` is preserved; remove it manually if desired.
+`/etc/fprintd-prompt.conf` is preserved; remove it manually if desired.
 
 ## Troubleshooting
 
@@ -100,4 +100,3 @@ Common issues:
 - **Gettext link missing**: Reinstall the package or run
   `sudo fprintd-prompt apply`.
 - **Catalog missing but config present**: Run `sudo fprintd-prompt apply`.
-

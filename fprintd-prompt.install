@@ -1,0 +1,24 @@
+post_install() {
+    # Migrate old config if present
+    if [ ! -f /etc/fprintd-prompt.conf ] && [ -f /etc/fprintd-custom-prompt.conf ]; then
+        mv /etc/fprintd-custom-prompt.conf /etc/fprintd-prompt.conf
+    fi
+    rm -rf /var/lib/fprintd-custom-prompt
+
+    if [ -f /etc/fprintd-prompt.conf ]; then
+        echo "Regenerating custom prompt catalog..."
+        /usr/bin/fprintd-prompt apply 2>/dev/null || \
+            echo "Warning: failed to regenerate catalog. Run 'fprintd-prompt apply' manually."
+    fi
+}
+
+post_upgrade() {
+    post_install
+}
+
+post_remove() {
+    rm -f /var/lib/fprintd-prompt/fprintd.mo
+    rmdir --ignore-fail-on-non-empty /var/lib/fprintd-prompt 2>/dev/null || true
+    echo "Custom prompt catalog removed. Upstream fprintd prompts are now active."
+    echo "To fully clean up, remove /etc/fprintd-prompt.conf if it exists."
+}
