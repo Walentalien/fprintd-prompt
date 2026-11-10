@@ -226,7 +226,7 @@ def read_config(config_path: Path = CONFIG_PATH) -> str | None:
     """Return the configured prompt, or None if no config exists."""
     if not config_path.is_file():
         return None
-    text = config_path.read_text(encoding="utf-8").strip()
+    text = config_path.read_text(encoding="utf-8").removesuffix("\n")
     return text if text else None
 
 

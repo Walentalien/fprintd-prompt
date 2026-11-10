@@ -496,12 +496,33 @@ class TestConfiguration(unittest.TestCase):
             result = fp.read_config(config_path=cfg)
             self.assertEqual(result, prompt)
 
-    def test_leading_trailing_spaces_stripped_on_read(self):
+    def test_whitespace_preserved_on_read(self):
+        prompts = ["  hello  ", "\thello\t", " \t ",
+                   "\u00a0hello\u2003", " \tAuthenticate 🔐 100%\t "]
         with tempfile.TemporaryDirectory() as td:
             cfg = Path(td) / "config.conf"
-            fp.write_config("  hello  ", config_path=cfg)
-            result = fp.read_config(config_path=cfg)
-            self.assertEqual(result, "hello")
+            for prompt in prompts:
+                with self.subTest(prompt=prompt):
+                    fp.write_config(prompt, config_path=cfg)
+                    self.assertEqual(fp.read_config(cfg), prompt)
+
+    def test_read_removes_only_terminating_newline(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Path(td) / "config.conf"
+            cfg.write_text("  hello  \n\n", encoding="utf-8")
+            self.assertEqual(fp.read_config(cfg), "  hello  \n")
+
+    def test_read_without_terminating_newline(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Path(td) / "config.conf"
+            cfg.write_text("  hello\t", encoding="utf-8")
+            self.assertEqual(fp.read_config(cfg), "  hello\t")
+
+    def test_read_newline_only(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Path(td) / "config.conf"
+            cfg.write_text("\n", encoding="utf-8")
+            self.assertIsNone(fp.read_config(cfg))
 
     def test_atomic_replacement(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1043,6 +1064,26 @@ class TestSetPrompt(unittest.TestCase):
 
 class TestSetAndResetIntegration(unittest.TestCase):
     """Integration test: set then reset with temp paths."""
+
+    @unittest.skipUnless(_have_msgfmt(), "msgfmt not installed")
+    def test_set_and_apply_preserve_whitespace(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Path(td) / "prompt.conf"
+            mo = Path(td) / "state" / "fprintd.mo"
+            prompt = " \tScan finger 🔐 100%\t "
+            fp.set_prompt(prompt, config_path=cfg, catalog_path=mo)
+            self.assertEqual(fp.read_config(cfg), prompt)
+            fp.apply_prompt(config_path=cfg, catalog_path=mo)
+            with mo.open("rb") as fh:
+                translations = gettext.GNUTranslations(fh)
+            self.assertEqual(translations.gettext(
+                "Place your finger on the fingerprint reader"), prompt)
+            info = fp.inspect_status(
+                config_path=cfg, catalog_path=mo,
+                system_catalog_path=Path(td) / "system.mo",
+            )
+            self.assertEqual(info["Catalog verification"],
+                             "OK — translates correctly")
 
     @unittest.skipUnless(_have_msgfmt(), "msgfmt not installed")
     def test_set_then_reset(self):
