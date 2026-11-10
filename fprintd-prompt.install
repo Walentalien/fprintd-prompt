@@ -7,7 +7,7 @@ post_install() {
 
     if [ -f /etc/fprintd-prompt.conf ]; then
         echo "Regenerating custom prompt catalog..."
-        /usr/bin/fprintd-prompt apply 2>/dev/null || \
+        /usr/bin/fprintd-prompt apply || \
             echo "Warning: failed to regenerate catalog. Run 'fprintd-prompt apply' manually."
     fi
 }
