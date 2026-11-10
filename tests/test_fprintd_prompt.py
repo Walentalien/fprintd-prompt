@@ -6,6 +6,7 @@ All tests use temporary directories and never touch real system paths.
 
 import gettext
 import io
+import json
 import os
 import re
 import shutil
@@ -20,6 +21,50 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import fprintd_prompt as fp
+
+
+_NATIVE_ASPRINTF_SCRIPT = """
+import ctypes
+import gettext
+import json
+import resource
+import sys
+
+resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+libc = ctypes.CDLL(None, use_errno=True)
+libc.asprintf.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_char_p]
+libc.asprintf.restype = ctypes.c_int
+libc.free.argtypes = [ctypes.c_void_p]
+libc.free.restype = None
+with open(sys.argv[1], "rb") as fh:
+    translations = gettext.GNUTranslations(fh)
+driver = ctypes.c_char_p(sys.argv[2].encode("utf-8"))
+outputs = {}
+for msgid in json.load(sys.stdin):
+    fmt = translations.gettext(msgid).encode("utf-8")
+    buffer = ctypes.c_void_p()
+    length = libc.asprintf(ctypes.byref(buffer), fmt, driver)
+    if length < 0:
+        raise OSError(ctypes.get_errno(), "asprintf failed")
+    try:
+        outputs[msgid] = ctypes.string_at(buffer, length).decode("utf-8")
+    finally:
+        libc.free(buffer)
+json.dump(outputs, sys.stdout)
+"""
+
+
+def _native_asprintf(catalog: Path, msgids: list[str], driver: str) -> dict[str, str]:
+    """Format compiled translations in an isolated native process."""
+    result = subprocess.run(
+        [sys.executable, "-c", _NATIVE_ASPRINTF_SCRIPT, str(catalog), driver],
+        input=json.dumps(msgids), capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode != 0:
+        raise AssertionError(
+            f"Native asprintf process exited with {result.returncode}: {result.stderr}"
+        )
+    return json.loads(result.stdout)
 
 
 def _have_msgfmt() -> bool:
@@ -475,14 +520,17 @@ class TestPercentSafety(unittest.TestCase):
     """
 
     PROMPTS = [
+        "Touch sensor",
         "100%",
         "%s",
         "%d",
         "%p",
+        "%n",
         "%%",
         "hello %s world",
         "Authenticate 🔐 — 100% Linux",
         "literal %.0s",
+        r'He said "touch \\ sensor" — 100%',
     ]
 
     @unittest.skipUnless(_have_msgfmt(), "msgfmt not installed")
@@ -535,22 +583,21 @@ class TestPercentSafety(unittest.TestCase):
                     self.assertTrue(mo.exists())
 
     @unittest.skipUnless(_have_msgfmt(), "msgfmt not installed")
-    def test_asprintf_simulation(self):
-        """Simulate what C asprintf would produce after processing."""
+    def test_device_specific_catalog_matches_native_asprintf(self):
+        """Use libc's formatter on all compiled device-specific translations."""
+        msgids = [m for m in fp.INITIAL_MSGIDS if "%s" in m]
+        self.assertEqual(len(msgids), 22)
         for prompt in self.PROMPTS:
-            with self.subTest(prompt=prompt):
-                po_text = fp.render_po(prompt)
-                # For a device-specific entry:
-                specific_msgids = [m for m in fp.INITIAL_MSGIDS if "%s" in m]
-                msgstr = _get_msgstr_from_po(po_text, specific_msgids[0])
-                # Simulate C printf: %% → %, %.0s → "" (consumes driver_name)
-                simulated = msgstr.replace("%%", "\x00PERCENT\x00")
-                simulated = simulated.replace("%.0s", "")
-                simulated = simulated.replace("\x00PERCENT\x00", "%")
-                self.assertEqual(
-                    simulated, prompt,
-                    f"asprintf simulation failed for {prompt!r}: got {simulated!r}",
-                )
+            with self.subTest(prompt=prompt), tempfile.TemporaryDirectory() as td:
+                mo = Path(td) / "fprintd.mo"
+                fp.compile_catalog(fp.render_po(prompt), mo)
+                for driver in ("Test Reader", "Reader %s 🔐"):
+                    with self.subTest(driver=driver):
+                        outputs = _native_asprintf(mo, msgids, driver)
+                        self.assertEqual(set(outputs), set(msgids))
+                        for msgid in msgids:
+                            with self.subTest(msgid=msgid):
+                                self.assertEqual(outputs[msgid], prompt)
 
 
 class TestConfiguration(unittest.TestCase):
@@ -1434,23 +1481,16 @@ class TestSetAndResetIntegration(unittest.TestCase):
 
     @unittest.skipUnless(_have_msgfmt(), "msgfmt not installed")
     def test_apply_device_specific_verification(self):
-        """Verify device-specific translations via asprintf simulation."""
+        """Verify a saved prompt through apply and native C formatting."""
         with tempfile.TemporaryDirectory() as td:
             cfg = Path(td) / "prompt.conf"
             mo = Path(td) / "test.mo"
             prompt = "Sensor 🔐 — 100%"
             fp.write_config(prompt, config_path=cfg)
-            fp.compile_catalog(fp.render_po(prompt), mo)
-            with open(mo, "rb") as fh:
-                t = gettext.GNUTranslations(fh)
-            raw = t.gettext("Place your left index finger on %s")
-            # Simulate C asprintf: raw % driver_name
-            driver = "goodix"
-            try:
-                result = raw % (driver,)
-            except TypeError:
-                self.fail(f"msgstr is not printf-safe: {raw!r}")
-            self.assertEqual(result, prompt)
+            fp.apply_prompt(config_path=cfg, catalog_path=mo)
+            msgid = "Place your left index finger on %s"
+            outputs = _native_asprintf(mo, [msgid], "goodix")
+            self.assertEqual(outputs[msgid], prompt)
 
 
 if __name__ == "__main__":
