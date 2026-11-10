@@ -5,6 +5,7 @@ All tests use temporary directories and never touch real system paths.
 """
 
 import gettext
+import io
 import os
 import re
 import shutil
@@ -12,6 +13,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 # Ensure the module under test is importable from the repo root.
 import sys
@@ -793,6 +795,252 @@ class TestParser(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 0)
 
 
+@unittest.skipUnless(_have_msgfmt(), "msgfmt not installed")
+class TestSetPrompt(unittest.TestCase):
+    def setUp(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        self.root = Path(td.name)
+        self.config = self.root / "etc" / "prompt.conf"
+        self.catalog = self.root / "state" / "fprintd.mo"
+        fp.write_config("Old prompt", config_path=self.config)
+        self.config.chmod(0o640)
+        fp.compile_catalog(fp.render_po("Old prompt"), self.catalog)
+        self.old_config = self.config.read_bytes()
+        self.old_catalog = self.catalog.read_bytes()
+        self.prompt = "New prompt 🔐 100%"
+        self.real_replace = os.replace
+
+    def run_set(self):
+        fp.set_prompt(self.prompt, config_path=self.config,
+                      catalog_path=self.catalog)
+
+    def assert_no_staging_files(self):
+        self.assertEqual(list(self.root.glob("*/.fprintd-prompt-*")), [])
+
+    def assert_original_files(self):
+        self.assertEqual(self.config.read_bytes(), self.old_config)
+        self.assertEqual(self.config.stat().st_mode & 0o777, 0o640)
+        self.assertEqual(self.catalog.read_bytes(), self.old_catalog)
+        self.assert_no_staging_files()
+
+    def fail_catalog_replace(self, src, dst):
+        if Path(dst) == self.catalog:
+            raise OSError("injected catalog replacement failure")
+        return self.real_replace(src, dst)
+
+    def test_set_updates_both_files(self):
+        self.run_set()
+        self.assertEqual(fp.read_config(self.config), self.prompt)
+        with self.catalog.open("rb") as fh:
+            translations = gettext.GNUTranslations(fh)
+        self.assertEqual(translations.gettext(
+            "Place your finger on the fingerprint reader"), self.prompt)
+        self.assert_no_staging_files()
+
+    def test_first_set_creates_both_files(self):
+        self.config.unlink()
+        self.catalog.unlink()
+        self.run_set()
+        self.assertEqual(fp.read_config(self.config), self.prompt)
+        with self.catalog.open("rb") as fh:
+            translations = gettext.GNUTranslations(fh)
+        self.assertEqual(translations.gettext(
+            "Swipe your finger across the fingerprint reader"), self.prompt)
+        self.assert_no_staging_files()
+
+    def test_failed_po_write_preserves_both_files(self):
+        with patch.object(fp.os, "write", side_effect=OSError("PO write failed")):
+            with self.assertRaisesRegex(OSError, "PO write failed"):
+                self.run_set()
+        self.assert_original_files()
+
+    def test_failed_compilation_preserves_both_files(self):
+        with patch.object(fp, "render_po", return_value='msgid "unclosed\n'):
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.run_set()
+        self.assert_original_files()
+
+    def test_failed_config_backup_preserves_both_files(self):
+        with patch.object(fp.shutil, "copy2",
+                          side_effect=OSError("backup write failed")):
+            with self.assertRaisesRegex(OSError, "backup write failed"):
+                self.run_set()
+        self.assert_original_files()
+
+    def test_failed_config_write_preserves_both_files(self):
+        real_write_config = fp.write_config
+
+        def fail_write(prompt, config_path):
+            with patch.object(fp.os, "write",
+                              side_effect=OSError("config write failed")):
+                real_write_config(prompt, config_path=config_path)
+
+        with patch.object(fp, "write_config", side_effect=fail_write):
+            with self.assertRaisesRegex(OSError, "config write failed"):
+                self.run_set()
+        self.assert_original_files()
+
+    def test_failed_staged_catalog_replace_preserves_both_files(self):
+        def fail_replace(src, dst):
+            if Path(dst).name == "fprintd.mo":
+                raise OSError("staged catalog replacement failed")
+            return self.real_replace(src, dst)
+
+        with patch.object(fp.os, "replace", side_effect=fail_replace):
+            with self.assertRaisesRegex(OSError, "staged catalog replacement"):
+                self.run_set()
+        self.assert_original_files()
+
+    def test_failed_staged_config_replace_preserves_both_files(self):
+        def fail_replace(src, dst):
+            if Path(dst).name == "new.conf":
+                raise OSError("staged config replacement failed")
+            return self.real_replace(src, dst)
+
+        with patch.object(fp.os, "replace", side_effect=fail_replace):
+            with self.assertRaisesRegex(OSError, "staged config replacement"):
+                self.run_set()
+        self.assert_original_files()
+
+    def test_failed_config_replace_preserves_both_files(self):
+        def fail_replace(src, dst):
+            if Path(dst) == self.config:
+                raise OSError("config replacement failed")
+            return self.real_replace(src, dst)
+
+        with patch.object(fp.os, "replace", side_effect=fail_replace):
+            with self.assertRaisesRegex(OSError, "config replacement failed"):
+                self.run_set()
+        self.assert_original_files()
+
+    def test_failed_catalog_replace_restores_config(self):
+        with patch.object(fp.os, "replace",
+                          side_effect=self.fail_catalog_replace):
+            with self.assertRaisesRegex(OSError, "catalog replacement failure"):
+                self.run_set()
+        self.assert_original_files()
+        fp.apply_prompt(config_path=self.config, catalog_path=self.catalog)
+        self.assertEqual(self.catalog.read_bytes(), self.old_catalog)
+
+    def test_failed_first_catalog_replace_removes_new_config(self):
+        self.config.unlink()
+        self.catalog.unlink()
+        with patch.object(fp.os, "replace",
+                          side_effect=self.fail_catalog_replace):
+            with self.assertRaises(OSError):
+                self.run_set()
+        self.assertFalse(self.config.exists())
+        self.assertFalse(self.catalog.exists())
+        self.assert_no_staging_files()
+
+    def test_failed_rollback_keeps_recoverable_config(self):
+        def fail_replace(src, dst):
+            if Path(src).name == "previous.conf":
+                raise OSError("injected rollback failure")
+            return self.fail_catalog_replace(src, dst)
+
+        with patch.object(fp.os, "replace", side_effect=fail_replace):
+            with self.assertRaisesRegex(OSError, "rollback failed") as raised:
+                self.run_set()
+        backups = list(self.root.glob("etc/.fprintd-prompt-*/previous.conf"))
+        self.assertEqual(len(backups), 1)
+        backup = backups[0]
+        self.assertEqual(backup.read_bytes(), self.old_config)
+        self.assertEqual(backup.stat().st_mode & 0o777, 0o640)
+        self.assertIn(str(backup), str(raised.exception))
+        self.assertIn(str(self.config), str(raised.exception))
+        self.assertIn("catalog replacement failure", str(raised.exception))
+        self.assertIn("injected rollback failure", str(raised.exception))
+        self.assertEqual(fp.read_config(self.config), self.prompt)
+        self.assertEqual(self.catalog.read_bytes(), self.old_catalog)
+        self.assertEqual(list(self.catalog.parent.iterdir()), [self.catalog])
+        os.replace(backup, self.config)
+        backup.parent.rmdir()
+        self.assert_original_files()
+
+    def test_failed_first_rollback_reports_config_to_remove(self):
+        self.config.unlink()
+        self.catalog.unlink()
+        real_unlink = Path.unlink
+
+        def fail_unlink(path, *args, **kwargs):
+            if path == self.config:
+                raise OSError("injected unlink failure")
+            return real_unlink(path, *args, **kwargs)
+
+        with patch.object(fp.os, "replace",
+                          side_effect=self.fail_catalog_replace), \
+             patch.object(Path, "unlink", fail_unlink):
+            with self.assertRaisesRegex(OSError, "rollback failed") as raised:
+                self.run_set()
+        self.assertIn(f"Remove {self.config}", str(raised.exception))
+        self.assertEqual(fp.read_config(self.config), self.prompt)
+        self.assertFalse(self.catalog.exists())
+        self.assert_no_staging_files()
+
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses directory permissions")
+    def test_cleanup_failure_does_not_hide_recovery_instructions(self):
+        def fail_replace(src, dst):
+            if Path(dst) == self.catalog:
+                self.config.parent.chmod(0o555)
+                self.catalog.parent.chmod(0o555)
+                raise OSError("injected catalog replacement failure")
+            return self.real_replace(src, dst)
+
+        try:
+            with patch.object(fp.os, "replace", side_effect=fail_replace):
+                with self.assertRaisesRegex(OSError, "rollback failed") as raised:
+                    self.run_set()
+        finally:
+            self.config.parent.chmod(0o755)
+            self.catalog.parent.chmod(0o755)
+        backups = list(self.root.glob("etc/.fprintd-prompt-*/previous.conf"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_bytes(), self.old_config)
+        self.assertIn(f"Restore {backups[0]} to {self.config}",
+                      str(raised.exception))
+        self.assertEqual(self.catalog.read_bytes(), self.old_catalog)
+
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses directory permissions")
+    def test_first_set_cleanup_failure_does_not_hide_recovery_instructions(self):
+        self.config.unlink()
+        self.catalog.unlink()
+
+        def fail_replace(src, dst):
+            if Path(dst) == self.catalog:
+                self.config.parent.chmod(0o555)
+                self.catalog.parent.chmod(0o555)
+                raise OSError("injected catalog replacement failure")
+            return self.real_replace(src, dst)
+
+        try:
+            with patch.object(fp.os, "replace", side_effect=fail_replace):
+                with self.assertRaisesRegex(OSError, "rollback failed") as raised:
+                    self.run_set()
+        finally:
+            self.config.parent.chmod(0o755)
+            self.catalog.parent.chmod(0o755)
+        self.assertIn(f"Remove {self.config}", str(raised.exception))
+        self.assertEqual(fp.read_config(self.config), self.prompt)
+        self.assertFalse(self.catalog.exists())
+
+    def test_cli_reports_config_write_failure_without_changing_catalog(self):
+        with patch.object(fp, "CONFIG_PATH", self.config), \
+             patch.object(fp, "CATALOG_PATH", self.catalog), \
+             patch.object(fp, "_require_root"), \
+             patch.object(fp, "write_config",
+                          side_effect=PermissionError("config write failed")), \
+             patch("sys.stderr", new_callable=io.StringIO) as stderr, \
+             patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            with self.assertRaises(SystemExit) as raised:
+                fp.main(["set", self.prompt])
+        self.assertEqual(raised.exception.code, 1)
+        self.assertIn("Error: config write failed", stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
+        self.assert_original_files()
+
+
 class TestSetAndResetIntegration(unittest.TestCase):
     """Integration test: set then reset with temp paths."""
 
@@ -802,12 +1050,8 @@ class TestSetAndResetIntegration(unittest.TestCase):
             cfg = Path(td) / "prompt.conf"
             state = Path(td) / "state"
             mo = state / "fprintd.mo"
-            # Simulate set
             prompt = "Touch 🔐 100%"
-            fp.validate_prompt(prompt)
-            po_text = fp.render_po(prompt)
-            fp.compile_catalog(po_text, mo)
-            fp.write_config(prompt, config_path=cfg)
+            fp.set_prompt(prompt, config_path=cfg, catalog_path=mo)
             self.assertTrue(mo.exists())
             self.assertEqual(fp.read_config(cfg), prompt)
             # Simulate reset

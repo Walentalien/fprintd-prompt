@@ -16,6 +16,7 @@ import argparse
 import gettext
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -238,6 +239,65 @@ def write_config(prompt: str, config_path: Path = CONFIG_PATH) -> None:
 # High-level operations
 # ---------------------------------------------------------------------------
 
+def set_prompt(
+    prompt: str,
+    *,
+    config_path: Path = CONFIG_PATH,
+    catalog_path: Path = CATALOG_PATH,
+) -> None:
+    """Prepare both files, then publish with rollback on catalog failure.
+
+    This handles I/O errors, not crashes or concurrent writers. If restoring
+    an existing config fails, keep its backup for manual recovery.
+    """
+    validate_prompt(prompt)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    catalog_path.parent.mkdir(parents=True, exist_ok=True)
+    config_staging = Path(tempfile.mkdtemp(
+        prefix=".fprintd-prompt-", dir=config_path.parent,
+    ))
+    backup = config_staging / "previous.conf"
+    new_config = config_staging / "new.conf"
+    keep_backup = False
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix=".fprintd-prompt-", dir=catalog_path.parent,
+            ignore_cleanup_errors=True,
+        ) as td:
+            new_catalog = Path(td) / "fprintd.mo"
+            compile_catalog(render_po(prompt), new_catalog)
+            try:
+                shutil.copy2(config_path, backup)
+                had_config = True
+            except FileNotFoundError:
+                had_config = False
+            write_config(prompt, config_path=new_config)
+            os.replace(new_config, config_path)
+            try:
+                os.replace(new_catalog, catalog_path)
+            except OSError as update_error:
+                try:
+                    if had_config:
+                        os.replace(backup, config_path)
+                    else:
+                        config_path.unlink()
+                except OSError as rollback_error:
+                    keep_backup = had_config
+                    recovery = (
+                        f"Restore {backup} to {config_path}."
+                        if had_config else
+                        f"Remove {config_path} to restore the previous state."
+                    )
+                    raise OSError(
+                        f"Catalog update failed ({update_error}); configuration "
+                        f"rollback failed ({rollback_error}). {recovery}"
+                    ) from update_error
+                raise
+    finally:
+        if not keep_backup:
+            shutil.rmtree(config_staging, ignore_errors=True)
+
+
 def apply_prompt(
     prompt: str | None = None,
     *,
@@ -430,11 +490,7 @@ def main(argv: list[str] | None = None) -> None:
     try:
         if args.command == "set":
             prompt = args.prompt
-            validate_prompt(prompt)
-            # Compile first before committing
-            po_text = render_po(prompt)
-            compile_catalog(po_text, CATALOG_PATH)
-            write_config(prompt)
+            set_prompt(prompt, config_path=CONFIG_PATH, catalog_path=CATALOG_PATH)
             print(f"Custom prompt set: {prompt}")
             return
 
@@ -457,7 +513,7 @@ def main(argv: list[str] | None = None) -> None:
         err = exc.stderr.strip() if exc.stderr else str(exc)
         print(f"Error compiling catalog: {err}", file=sys.stderr)
         sys.exit(1)
-    except ValueError as exc:
+    except (ValueError, OSError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
 

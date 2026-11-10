@@ -50,9 +50,14 @@ When `fprintd-prompt set` is run, the tool:
 
 1. Validates the prompt text.
 2. Generates a `.po` file covering all 44 upstream initial prompt variants.
-3. Compiles it with `msgfmt` into a `.mo` catalog.
-4. Saves the prompt to `/etc/fprintd-prompt.conf`.
-5. Atomically installs the catalog.
+3. Compiles it with `msgfmt` and stages the new catalog and configuration.
+4. Saves the prompt to `/etc/fprintd-prompt.conf`, then activates the catalog.
+
+If catalog activation fails, the previous configuration is restored. If that
+rollback also fails, the error reports how to recover and, when a previous
+configuration existed, where its backup was kept. Each file replacement is
+atomic; the pair is not a single transaction and does not protect against
+process crashes or simultaneous updates.
 
 Authentication behavior is completely unchanged. Only the displayed text is affected.
 
