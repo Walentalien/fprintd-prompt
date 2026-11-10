@@ -119,7 +119,10 @@ def po_quote(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 def printf_safe_translation(prompt: str, *, is_device_specific: bool) -> str:
-    """Build a msgstr that is safe for C ``asprintf`` consumption.
+    """Build a msgstr for the upstream literal or C formatting path.
+
+    Generic messages use strdup after gettext lookup, so their translations
+    must preserve the prompt literally.
 
     For device-specific messages the upstream code does:
         asprintf(&s, translated_message, driver_name);
@@ -127,14 +130,13 @@ def printf_safe_translation(prompt: str, *, is_device_specific: bool) -> str:
     We must ensure the user's literal ``%`` never becomes a printf
     directive while still consuming the required *driver_name* argument.
 
-    Strategy:
+    For device-specific messages:
     - Escape every ``%`` as ``%%``.
     - Append ``%.0s`` to silently consume the driver-name string.
     """
-    escaped = prompt.replace("%", "%%")
-    if is_device_specific:
-        escaped += "%.0s"
-    return escaped
+    if not is_device_specific:
+        return prompt
+    return prompt.replace("%", "%%") + "%.0s"
 
 
 def render_po(prompt: str) -> str:
