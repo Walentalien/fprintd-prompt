@@ -1,14 +1,11 @@
 # fprintd Custom Prompt
 
-Set a custom fingerprint reader prompt for `pam_fprintd`. One command to
-change what appears when your laptop asks you to touch the fingerprint sensor.
-
+Set a custom fingerprint reader prompt for `pam_fprintd` with one command:
 ```bash
-sudo fprintd-prompt set "Touch the sensor 🔐"
+"sudo fprintd-prompt set "Touch the sensor (appropriately)"
 ```
 
-The utility generates a GNU gettext catalog that overrides `pam_fprintd`'s
-`en_US` messages. 
+The utility generates a GNU gettext catalog that overrides `pam_fprintd`'s `en_US` messages. 
 
 ## Installation
 
@@ -39,36 +36,25 @@ sudo fprintd-prompt apply
 sudo fprintd-prompt reset
 ```
 
-Unicode, quotes, backslashes, emoji, and `%` are all supported:
-
-```bash
-sudo fprintd-prompt set "Authenticate 🔐 — 100% Linux"
-sudo fprintd-prompt set 'He said "touch the sensor"'
-sudo fprintd-prompt set "Zażółć gęślą jaźń"
-sudo fprintd-prompt set -- "-scan me"
-```
-
 ## How it works
 
-`pam_fprintd` uses GNU gettext to look up the `en_US` translation of its
-fingerprint prompt messages. This package installs a symlink:
+`pam_fprintd` uses GNU gettext to look up the `en_US` translation of its fingerprint prompt messages.
+The package installs a symlink:
 
 ```
 /usr/share/locale/en_US/LC_MESSAGES/fprintd.mo
   -> /var/lib/fprintd-custom-prompt/fprintd.mo
 ```
 
-When you run `fprintd-prompt set`, the tool:
+When `fprintd-prompt set` is run, the tool:
 
 1. Validates the prompt text.
-2. Generates a `.po` file covering all 44 upstream initial prompt variants
-   (place/swipe × 11 finger labels × generic/specific).
+2. Generates a `.po` file covering all 44 upstream initial prompt variants.
 3. Compiles it with `msgfmt` into a `.mo` catalog.
 4. Saves the prompt to `/etc/fprintd-custom-prompt.conf`.
 5. Atomically installs the catalog.
 
-Authentication behavior is completely unchanged. Only the displayed text
-is affected.
+Authentication behavior is completely unchanged. Only the displayed text is affected.
 
 ## Locale caveat
 
@@ -115,8 +101,3 @@ Common issues:
   `sudo fprintd-prompt apply`.
 - **Catalog missing but config present**: Run `sudo fprintd-prompt apply`.
 
-## License
-
-This project is released into the public domain under
-[CC0 1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/).
-See [LICENSE](LICENSE) for the full text.

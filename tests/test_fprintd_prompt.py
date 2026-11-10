@@ -202,7 +202,7 @@ class TestPrintfSafeTranslation(unittest.TestCase):
     def test_generic_with_percent(self):
         result = fp.printf_safe_translation("100% ready",
                                             is_device_specific=False)
-        self.assertEqual(result, "100%% ready")
+        self.assertEqual(result, "100% ready")
 
     def test_device_specific_no_percent(self):
         result = fp.printf_safe_translation("Touch sensor",
@@ -374,13 +374,13 @@ class TestCatalogCompilation(unittest.TestCase):
 
 
 class TestPercentSafety(unittest.TestCase):
-    """Ensure literal percent sequences in prompts are safe for asprintf.
+    """Preserve literal generic prompts and safe device-specific formats.
 
     For device-specific messages the upstream does:
         asprintf(&s, translated_message, driver_name);
 
-    We verify the PO msgstr is correctly escaped so that C printf
-    would produce the user's intended text.
+    Generic messages are copied directly after gettext lookup, so their
+    translations must already contain the user's intended text.
     """
 
     PROMPTS = [
@@ -390,6 +390,8 @@ class TestPercentSafety(unittest.TestCase):
         "%p",
         "%%",
         "hello %s world",
+        "Authenticate 🔐 — 100% Linux",
+        "literal %.0s",
     ]
 
     @unittest.skipUnless(_have_msgfmt(), "msgfmt not installed")
@@ -417,21 +419,18 @@ class TestPercentSafety(unittest.TestCase):
                     )
 
     @unittest.skipUnless(_have_msgfmt(), "msgfmt not installed")
-    def test_generic_msgstr_escaped(self):
-        """Generic msgstr must escape all % to %%."""
+    def test_generic_catalog_preserves_literal_percent(self):
+        """Compiled generic translations must equal the literal prompt."""
+        generic_msgids = [m for m in fp.INITIAL_MSGIDS if "%s" not in m]
         for prompt in self.PROMPTS:
-            with self.subTest(prompt=prompt):
-                po_text = fp.render_po(prompt)
-                generic_msgids = [m for m in fp.INITIAL_MSGIDS if "%s" not in m]
-                for msgid in generic_msgids[:1]:  # spot check one
-                    msgstr = _get_msgstr_from_po(po_text, msgid)
-                    self.assertIsNotNone(msgstr)
-                    # No bare % should remain
-                    bare_pct = re.findall(r'(?<!%)%(?!%)', msgstr)
-                    self.assertEqual(
-                        len(bare_pct), 0,
-                        f"Bare % found in {msgstr!r} for prompt {prompt!r}",
-                    )
+            with tempfile.TemporaryDirectory() as td:
+                mo = Path(td) / "test.mo"
+                fp.compile_catalog(fp.render_po(prompt), mo)
+                with mo.open("rb") as fh:
+                    translations = gettext.GNUTranslations(fh)
+                for msgid in generic_msgids:
+                    with self.subTest(prompt=prompt, msgid=msgid):
+                        self.assertEqual(translations.gettext(msgid), prompt)
 
     @unittest.skipUnless(_have_msgfmt(), "msgfmt not installed")
     def test_msgfmt_accepts_all_percent_prompts(self):
@@ -650,6 +649,23 @@ class TestInspectStatus(unittest.TestCase):
             self.assertEqual(info["Custom prompt"], "Touch")
             self.assertEqual(info["Config"], "present")
             self.assertEqual(info["Catalog"], "present")
+
+    @unittest.skipUnless(_have_msgfmt(), "msgfmt not installed")
+    def test_catalog_verification_with_literal_percent(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Path(td) / "config.conf"
+            mo = Path(td) / "test.mo"
+            sys_cat = Path(td) / "system.mo"
+            prompt = "Authenticate 🔐 — 100% Linux"
+            fp.write_config(prompt, config_path=cfg)
+            fp.compile_catalog(fp.render_po(prompt), mo)
+            info = fp.inspect_status(
+                config_path=cfg,
+                catalog_path=mo,
+                system_catalog_path=sys_cat,
+            )
+            self.assertEqual(info["Catalog verification"],
+                             "OK — translates correctly")
 
     def test_wrong_symlink(self):
         with tempfile.TemporaryDirectory() as td:
