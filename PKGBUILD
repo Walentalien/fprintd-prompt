@@ -6,7 +6,6 @@ arch=('any')
 url='https://github.com/Walentalien/fprintd-prompt'
 license=('CC0-1.0')
 depends=('fprintd' 'gettext' 'python')
-makedepends=()
 install=fprintd-prompt.install
 source=('fprintd_prompt.py')
 sha256sums=('bcc7aaae91c790470c799140763fd554a7255fc967ccee2d1453d75869c69848')

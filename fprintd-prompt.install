@@ -1,10 +1,4 @@
 post_install() {
-    # Migrate old config if present
-    if [ ! -f /etc/fprintd-prompt.conf ] && [ -f /etc/fprintd-custom-prompt.conf ]; then
-        mv /etc/fprintd-custom-prompt.conf /etc/fprintd-prompt.conf
-    fi
-    rm -rf /var/lib/fprintd-custom-prompt
-
     if [ -f /etc/fprintd-prompt.conf ]; then
         echo "Regenerating custom prompt catalog..."
         /usr/bin/fprintd-prompt apply || \
