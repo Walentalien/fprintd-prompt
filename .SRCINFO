@@ -9,12 +9,6 @@ pkgbase = fprintd-prompt
 	depends = fprintd
 	depends = gettext
 	depends = python
-	provides = fprintd-custom-prompt
-	provides = fprintd-en-us-prompt-override
-	conflicts = fprintd-custom-prompt
-	conflicts = fprintd-en-us-prompt-override
-	replaces = fprintd-custom-prompt
-	replaces = fprintd-en-us-prompt-override
 	source = fprintd_prompt.py
 	sha256sums = bcc7aaae91c790470c799140763fd554a7255fc967ccee2d1453d75869c69848
 
