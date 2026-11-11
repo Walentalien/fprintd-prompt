@@ -1,14 +1,4 @@
 #!/usr/bin/env python3
-"""fprintd-prompt — CLI to set a custom pam_fprintd authentication prompt.
-
-Overrides the en_US gettext messages used by pam_fprintd so that the
-fingerprint reader prompt displays user-chosen text instead of the
-upstream default.
-
-The core technique (GNU gettext catalog override) is unchanged;
-this tool simply automates PO generation, compilation, and
-symlink management so the user never edits files manually.
-"""
 
 from __future__ import annotations
 
@@ -22,21 +12,15 @@ import sys
 import tempfile
 from pathlib import Path
 
-__version__ = "2.0.0"
+__version__ = "1.0.0"
 
-# ---------------------------------------------------------------------------
-# Fixed system paths (production)
-# ---------------------------------------------------------------------------
-
+# Fixed system paths
 CONFIG_PATH = Path("/etc/fprintd-prompt.conf")
 STATE_DIR = Path("/var/lib/fprintd-prompt")
 CATALOG_PATH = STATE_DIR / "fprintd.mo"
 SYSTEM_CATALOG_PATH = Path("/usr/share/locale/en_US/LC_MESSAGES/fprintd.mo")
 
-# ---------------------------------------------------------------------------
 # Upstream fprintd initial-prompt msgids (from fingerprint-strings.h)
-# ---------------------------------------------------------------------------
-
 FINGERS = [
     "finger",
     "left thumb",
@@ -70,13 +54,9 @@ def build_initial_msgids() -> list[str]:
 
 INITIAL_MSGIDS = build_initial_msgids()
 
-# ---------------------------------------------------------------------------
-# Validation
-# ---------------------------------------------------------------------------
-
 _MAX_PROMPT_BYTES = 4096
 
-# Control characters we reject (NUL, CR, LF, and other C0/C1 controls).
+# Control characters are rejected (NUL, CR, LF, and other C0/C1 controls).
 # Tab (0x09) is allowed since some terminals use it.
 _CONTROL_CHAR_RE = re.compile(
     r"[\x00-\x08\x0a-\x1f\x7f\x80-\x9f]"
@@ -99,25 +79,13 @@ def validate_prompt(prompt: str) -> None:
             f"maximum is {_MAX_PROMPT_BYTES}."
         )
 
-
-# ---------------------------------------------------------------------------
-# PO string escaping
-# ---------------------------------------------------------------------------
-
 def po_quote(text: str) -> str:
     """Escape *text* for inclusion inside a PO double-quoted string.
-
-    Handles backslashes and double-quotes.  Newlines are not expected
-    (they are rejected during validation).
+    Handles backslashes and double-quotes.
     """
     text = text.replace("\\", "\\\\")
     text = text.replace('"', '\\"')
     return text
-
-
-# ---------------------------------------------------------------------------
-# PO generation
-# ---------------------------------------------------------------------------
 
 def printf_safe_translation(prompt: str, *, is_device_specific: bool) -> str:
     """Build a msgstr for the upstream literal or C formatting path.
@@ -378,7 +346,6 @@ def inspect_status(
 
     prompt = read_config(config_path)
     info["Custom prompt"] = prompt if prompt else "disabled"
-    info["Prompt"] = prompt if prompt else "(none)"
     info["Config"] = "present" if config_path.is_file() else "missing"
     info["Catalog"] = "present" if catalog_path.is_file() else "missing"
 

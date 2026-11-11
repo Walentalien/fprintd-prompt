@@ -2,7 +2,7 @@
 
 Set a custom fingerprint reader prompt for `pam_fprintd` with one command:
 ```bash
-sudo fprintd-prompt set "Touch the sensor"
+sudo fprintd-prompt set "Touch the sensor (appropriately)"
 ```
 
 The utility generates a GNU gettext catalog that overrides `pam_fprintd`'s `en_US` messages. 
@@ -35,19 +35,6 @@ sudo fprintd-prompt apply
 # Remove the custom prompt and restore upstream defaults
 sudo fprintd-prompt reset
 ```
-
-## Tests
-
-With Python and gettext installed, run:
-
-```bash
-python3 -m unittest -v
-```
-
-CI runs the suite as an unprivileged user and fails if any test is skipped.
-It also checks the package hook script, verifies `.SRCINFO`, and builds the
-Arch package. A disposable container test installs the package, verifies catalog
-regeneration during reinstall, and checks removal preserves the configuration.
 
 ## How it works
 
@@ -125,3 +112,4 @@ Common issues:
 - **Gettext link missing or incorrect**: Reinstall the package to restore the
   symlink. `apply` rebuilds the catalog but does not create or repair that link.
 - **Catalog missing but config present**: Run `sudo fprintd-prompt apply`.
+

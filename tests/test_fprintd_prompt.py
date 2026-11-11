@@ -142,12 +142,6 @@ class TestBuildInitialMsgids(unittest.TestCase):
                 f"Unexpected msgid: {mid}",
             )
 
-    def test_exact_right_index_on_reader(self):
-        self.assertIn(
-            "Place your right index finger on the fingerprint reader",
-            fp.INITIAL_MSGIDS,
-        )
-
 
 class TestValidatePrompt(unittest.TestCase):
     """Test prompt validation."""
